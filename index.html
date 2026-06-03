@@ -4,297 +4,80 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
   <title>WebAR — Prato</title>
-
-  <!--
-    STACK REVISADA:
-    <model-viewer> é um Web Component do Google que usa:
-    - Android: ARCore via Scene Viewer (app nativo do Android) ou WebXR
-    - iOS:     AR Quick Look (ARKit nativo via Safari)
-    - Desktop: visualização 3D interativa com Three.js interno
-
-    VANTAGEM sobre MindAR World:
-    - Delega o AR para o sistema operacional (ARCore/ARKit), os mesmos
-      runtimes que o Unity AR Foundation usa. Muito mais estável.
-    - Zero configuração de SLAM manual.
-    - Suporte a .glb/.gltf nativo.
-
-    DESVANTAGEM:
-    - No Android abre o Scene Viewer (app separado), não inline no browser.
-    - iOS abre o AR Quick Look (também sai do browser).
-    - Se quiser AR inline no browser, a única opção estável é WebXR
-      (Chrome Android 93+) ou marker-based com AR.js.
-  -->
   <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
-
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-
     :root {
-      --bg: #0f0f0f;
-      --surface: #1a1a1a;
-      --surface2: #252525;
-      --text: #f0ede8;
-      --text2: rgba(240,237,232,0.55);
-      --accent: #e8a14a;
-      --radius: 16px;
+      --bg: #0f0f0f; --surface: #1a1a1a; --surface2: #252525;
+      --text: #f0ede8; --text2: rgba(240,237,232,0.55);
+      --accent: #e8a14a; --radius: 16px;
     }
+    body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
+    header { padding: 16px 20px 12px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid rgba(255,255,255,0.07); }
+    .back-btn { width: 36px; height: 36px; background: var(--surface); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 18px; cursor: pointer; flex-shrink: 0; }
+    header h1 { font-size: 17px; font-weight: 600; flex: 1; }
+    .badge { background: rgba(232,161,74,0.15); color: var(--accent); font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 100px; border: 1px solid rgba(232,161,74,0.3); }
+    .viewer-wrap { position: relative; background: var(--surface); flex-shrink: 0; }
+    model-viewer { width: 100%; height: 62vw; min-height: 240px; max-height: 360px; --poster-color: transparent; --progress-bar-color: var(--accent); }
+    .loading-overlay { position: absolute; inset: 0; background: var(--surface); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; transition: opacity 0.4s; pointer-events: none; }
+    .loading-overlay.hidden { opacity: 0; }
+    .dish-spinner { font-size: 40px; animation: pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse { 0%,100%{transform:scale(1);opacity:1}50%{transform:scale(0.88);opacity:0.6} }
+    .loading-overlay p { font-size: 13px; color: var(--text2); }
 
-    body {
-      background: var(--bg);
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      color: var(--text);
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-    }
-
-    /* ── Header ── */
-    header {
-      padding: 16px 20px 12px;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      border-bottom: 1px solid rgba(255,255,255,0.07);
-    }
-
-    .back-btn {
-      width: 36px; height: 36px;
-      background: var(--surface);
-      border-radius: 10px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 18px;
-      cursor: pointer;
-      flex-shrink: 0;
-    }
-
-    header h1 {
-      font-size: 17px;
-      font-weight: 600;
-      flex: 1;
-    }
-
-    .badge {
-      background: rgba(232,161,74,0.15);
-      color: var(--accent);
-      font-size: 11px;
-      font-weight: 600;
-      padding: 4px 10px;
-      border-radius: 100px;
-      border: 1px solid rgba(232,161,74,0.3);
-      letter-spacing: 0.3px;
-    }
-
-    /* ── Model viewer container ── */
-    .viewer-wrap {
-      position: relative;
-      background: var(--surface);
-      flex-shrink: 0;
-    }
-
-    model-viewer {
-      width: 100%;
-      height: 62vw;
-      min-height: 240px;
-      max-height: 360px;
-      --poster-color: transparent;
-      --progress-bar-color: var(--accent);
-      --progress-mask: transparent;
-    }
-
-    /* Botão AR nativo dentro do model-viewer */
-    .ar-btn-slot {
-      position: absolute;
-      bottom: 16px;
-      right: 16px;
-    }
-
-    #ar-button {
-      background: var(--accent);
-      color: #000;
-      border: none;
-      border-radius: 100px;
-      padding: 10px 20px;
-      font-size: 14px;
-      font-weight: 700;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      gap: 7px;
+    /*
+      SLOT ar-button:
+      No Android o <model-viewer> renderiza o slot normalmente.
+      No iOS o slot é IGNORADO — o Safari usa um link <a rel="ar"> nativo.
+      Por isso criamos os dois e mostramos o correto via JS.
+    */
+    #ar-button-android {
+      position: absolute; bottom: 16px; right: 16px;
+      background: var(--accent); color: #000; border: none;
+      border-radius: 100px; padding: 10px 20px;
+      font-size: 14px; font-weight: 700; cursor: pointer;
+      display: flex; align-items: center; gap: 7px;
       box-shadow: 0 4px 20px rgba(232,161,74,0.4);
       -webkit-tap-highlight-color: transparent;
-      letter-spacing: 0.2px;
     }
 
-    #ar-button[slot="ar-button"] { }
-
-    .ar-icon { font-size: 16px; }
-
-    /* Fallback quando AR não disponível */
-    #ar-fallback {
-      position: absolute;
-      bottom: 16px;
-      right: 16px;
-      background: var(--surface2);
-      color: var(--text2);
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 100px;
-      padding: 10px 18px;
-      font-size: 13px;
-      display: none;
+    /*
+      BOTÃO iOS: usa <a rel="ar"> com href apontando para .usdz.
+      É a única forma que o Safari aceita para abrir o AR Quick Look.
+      O filho <img> DEVE existir — é um requisito da spec do Quick Look.
+      Sem o <img>, o Safari não reconhece o link como AR.
+    */
+    #ar-link-ios {
+      position: absolute; bottom: 16px; right: 16px;
+      background: var(--accent); color: #000;
+      border-radius: 100px; padding: 10px 20px;
+      font-size: 14px; font-weight: 700;
+      display: none; align-items: center; gap: 7px;
+      text-decoration: none;
+      box-shadow: 0 4px 20px rgba(232,161,74,0.4);
+      -webkit-tap-highlight-color: transparent;
     }
+    /* A imagem precisa existir no DOM mas não precisa aparecer */
+    #ar-link-ios img { display: none; }
 
-    /* ── Indicador de carregamento customizado ── */
-    .loading-overlay {
-      position: absolute;
-      inset: 0;
-      background: var(--surface);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 14px;
-      transition: opacity 0.4s;
-      pointer-events: none;
-    }
-
-    .loading-overlay.hidden { opacity: 0; }
-
-    .dish-spinner {
-      font-size: 40px;
-      animation: pulse 1.4s ease-in-out infinite;
-    }
-
-    @keyframes pulse {
-      0%, 100% { transform: scale(1);   opacity: 1;   }
-      50%       { transform: scale(0.88); opacity: 0.6; }
-    }
-
-    .loading-overlay p {
-      font-size: 13px;
-      color: var(--text2);
-    }
-
-    /* ── Info card ── */
-    .info-card {
-      padding: 20px;
-      flex: 1;
-    }
-
-    .dish-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      margin-bottom: 10px;
-    }
-
-    .dish-name {
-      font-size: 22px;
-      font-weight: 700;
-      letter-spacing: -0.5px;
-      line-height: 1.2;
-    }
-
-    .dish-price {
-      font-size: 22px;
-      font-weight: 700;
-      color: var(--accent);
-    }
-
-    .dish-desc {
-      font-size: 14px;
-      color: var(--text2);
-      line-height: 1.6;
-      margin-bottom: 20px;
-    }
-
-    .tags {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-bottom: 24px;
-    }
-
-    .tag {
-      background: var(--surface2);
-      color: var(--text2);
-      font-size: 12px;
-      padding: 5px 12px;
-      border-radius: 100px;
-      border: 1px solid rgba(255,255,255,0.07);
-    }
-
-    /* Divisor com instrução */
-    .ar-instruction {
-      background: var(--surface);
-      border-radius: var(--radius);
-      padding: 16px;
-      display: flex;
-      gap: 12px;
-      align-items: flex-start;
-      margin-bottom: 20px;
-      border: 1px solid rgba(255,255,255,0.07);
-    }
-
+    .info-card { padding: 20px; flex: 1; }
+    .dish-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
+    .dish-name { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; line-height: 1.2; }
+    .dish-price { font-size: 22px; font-weight: 700; color: var(--accent); }
+    .dish-desc { font-size: 14px; color: var(--text2); line-height: 1.6; margin-bottom: 20px; }
+    .tags { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 24px; }
+    .tag { background: var(--surface2); color: var(--text2); font-size: 12px; padding: 5px 12px; border-radius: 100px; border: 1px solid rgba(255,255,255,0.07); }
+    .ar-instruction { background: var(--surface); border-radius: var(--radius); padding: 16px; display: flex; gap: 12px; align-items: flex-start; margin-bottom: 20px; border: 1px solid rgba(255,255,255,0.07); }
     .ar-instruction .icon { font-size: 24px; flex-shrink: 0; margin-top: 2px; }
-
-    .ar-instruction h3 {
-      font-size: 14px;
-      font-weight: 600;
-      margin-bottom: 4px;
-    }
-
-    .ar-instruction p {
-      font-size: 13px;
-      color: var(--text2);
-      line-height: 1.5;
-    }
-
-    /* Info de compatibilidade */
-    .compat-row {
-      display: flex;
-      gap: 10px;
-    }
-
-    .compat-item {
-      flex: 1;
-      background: var(--surface);
-      border-radius: 12px;
-      padding: 12px;
-      border: 1px solid rgba(255,255,255,0.07);
-      text-align: center;
-    }
-
+    .ar-instruction h3 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+    .ar-instruction p { font-size: 13px; color: var(--text2); line-height: 1.5; }
+    .compat-row { display: flex; gap: 10px; }
+    .compat-item { flex: 1; background: var(--surface); border-radius: 12px; padding: 12px; border: 1px solid rgba(255,255,255,0.07); text-align: center; }
     .compat-item .ci-icon { font-size: 22px; margin-bottom: 6px; }
     .compat-item .ci-label { font-size: 11px; color: var(--text2); }
     .compat-item .ci-status { font-size: 12px; font-weight: 600; color: #6fcf97; margin-top: 2px; }
-
-    /* Debug panel (hidden by default) */
-    #debug-panel {
-      display: none;
-      background: #111;
-      border-top: 1px solid #333;
-      padding: 12px 20px;
-      font-family: monospace;
-      font-size: 11px;
-      color: #0f0;
-      max-height: 140px;
-      overflow-y: auto;
-    }
-
-    #debug-toggle {
-      position: fixed;
-      bottom: 12px;
-      left: 12px;
-      background: rgba(0,0,0,0.7);
-      color: #0f0;
-      border: 1px solid #0f0;
-      border-radius: 8px;
-      padding: 6px 10px;
-      font-size: 11px;
-      font-family: monospace;
-      cursor: pointer;
-      z-index: 999;
-    }
+    #debug-panel { display: none; background: #111; border-top: 1px solid #333; padding: 12px 20px; font-family: monospace; font-size: 11px; color: #0f0; max-height: 140px; overflow-y: auto; }
+    #debug-toggle { position: fixed; bottom: 12px; left: 12px; background: rgba(0,0,0,0.7); color: #0f0; border: 1px solid #0f0; border-radius: 8px; padding: 6px 10px; font-size: 11px; font-family: monospace; cursor: pointer; z-index: 999; }
   </style>
 </head>
 <body>
@@ -305,35 +88,25 @@
   <span class="badge">AR</span>
 </header>
 
-<!--
-  CONCEITO: <model-viewer> é um Web Component que encapsula Three.js internamente
-  e expõe atributos HTML para configurar AR, animações e interatividade.
-
-  ar            → ativa o botão de AR e a integração com ARCore/ARKit
-  ar-modes      → ordem de tentativa: webxr (Chrome Android inline) →
-                   scene-viewer (Scene Viewer app Android) →
-                   quick-look (AR Quick Look iOS Safari)
-  camera-controls → permite orbitar o modelo com toque/mouse (equivale
-                    ao OrbitCamera no Unity Cinemachine)
-  auto-rotate   → rotação automática enquanto sem interação
-  shadow-intensity → sombra projetada no plano AR (o Unity faz via
-                    ARPlaneManager + shadow receiver)
--->
 <div class="viewer-wrap">
 
-  <!-- Loading overlay customizado -->
   <div class="loading-overlay" id="loading-overlay">
     <div class="dish-spinner">🥘</div>
     <p>Carregando modelo 3D…</p>
   </div>
 
+  <!--
+    ios-src REMOVIDO do atributo — vamos injetar o link iOS manualmente via JS.
+    Motivo: quando ios-src aponta para um .usdz que falha (CORS, 404, etc),
+    o Safari esconde o botão AR sem nenhum aviso. Separando os dois fluxos
+    conseguimos controlar e debugar cada plataforma individualmente.
+  -->
   <model-viewer
     id="dish-viewer"
     src="https://modelviewer.dev/shared-assets/models/Astronaut.glb"
-    ios-src="https://modelviewer.dev/shared-assets/models/Astronaut.usdz"
     alt="Prato em 3D"
     ar
-    ar-modes="webxr scene-viewer quick-look"
+    ar-modes="webxr scene-viewer"
     camera-controls
     auto-rotate
     auto-rotate-delay="2000"
@@ -344,142 +117,173 @@
     environment-image="neutral"
     style="background: transparent;"
   >
-    <!-- slot="ar-button" é renderizado DENTRO do viewer, sobre o canvas -->
-    <button slot="ar-button" id="ar-button">
-      <span class="ar-icon">📷</span> Ver na sua mesa
+    <!-- Botão Android/WebXR via slot nativo do model-viewer -->
+    <button slot="ar-button" id="ar-button-android">
+      📷 Ver na sua mesa
     </button>
-
-    <!--
-      slot="poster" seria a imagem de placeholder enquanto o modelo carrega.
-      Omitido aqui pois usamos nosso próprio loading overlay.
-    -->
   </model-viewer>
+
+  <!--
+    BOTÃO iOS — <a rel="ar"> com filho <img> (obrigatório pelo Safari)
+    href aponta direto pro .usdz. Pode ser um link do seu CDN/Netlify.
+
+    IMPORTANTE: O .usdz precisa ser servido com o header correto:
+      Content-Type: model/vnd.usdz+zip
+    O Netlify faz isso automaticamente para arquivos .usdz.
+
+    Para teste usamos o .usdz público do Google. Para produção,
+    substitua pelo .usdz exportado do seu modelo (Blender → exportar USDZ,
+    ou Reality Converter no Mac para converter de .glb/.obj).
+  -->
+  <a id="ar-link-ios"
+     rel="ar"
+     href="https://modelviewer.dev/shared-assets/models/Astronaut.usdz">
+    <img src="" alt="">
+    📷 Ver na sua mesa
+  </a>
 
 </div>
 
-<!-- ── Info do prato ── -->
 <div class="info-card">
-
   <div class="dish-header">
     <div class="dish-name">Risoto de<br>Cogumelos</div>
     <div class="dish-price">R$ 54</div>
   </div>
-
-  <p class="dish-desc">
-    Arroz arbóreo cremoso com mix de cogumelos shiitake e paris,
-    finalizado com parmesão reggiano e trufa negra ralada na hora.
-  </p>
-
+  <p class="dish-desc">Arroz arbóreo cremoso com mix de cogumelos shiitake e paris, finalizado com parmesão reggiano e trufa negra ralada na hora.</p>
   <div class="tags">
     <span class="tag">🌿 Vegetariano</span>
     <span class="tag">⏱ 25 min</span>
     <span class="tag">🔥 620 kcal</span>
     <span class="tag">👤 1 pessoa</span>
   </div>
-
   <div class="ar-instruction">
     <div class="icon">📱</div>
     <div>
       <h3>Como ver em AR</h3>
-      <p>Toque em "Ver na sua mesa" acima. No Android abre o Scene Viewer, no iPhone abre o AR Quick Look — ambos usam a câmera traseira para posicionar o prato sobre qualquer superfície.</p>
+      <p id="ar-instruction-text">Toque em "Ver na sua mesa" acima para posicionar o prato sobre qualquer superfície.</p>
     </div>
   </div>
-
   <div class="compat-row">
-    <div class="compat-item">
-      <div class="ci-icon">🤖</div>
-      <div class="ci-label">Android</div>
-      <div class="ci-status">ARCore</div>
-    </div>
-    <div class="compat-item">
-      <div class="ci-icon">🍎</div>
-      <div class="ci-label">iPhone</div>
-      <div class="ci-status">ARKit</div>
-    </div>
-    <div class="compat-item">
-      <div class="ci-icon">💻</div>
-      <div class="ci-label">Desktop</div>
-      <div class="ci-status">3D viewer</div>
-    </div>
+    <div class="compat-item"><div class="ci-icon">🤖</div><div class="ci-label">Android</div><div class="ci-status">ARCore</div></div>
+    <div class="compat-item"><div class="ci-icon">🍎</div><div class="ci-label">iPhone</div><div class="ci-status">ARKit</div></div>
+    <div class="compat-item"><div class="ci-icon">💻</div><div class="ci-label">Desktop</div><div class="ci-status">3D viewer</div></div>
   </div>
-
 </div>
 
-<!-- Debug panel -->
 <button id="debug-toggle" onclick="toggleDebug()">debug</button>
-<div id="debug-panel" id="debug-panel"></div>
+<div id="debug-panel"></div>
 
 <script>
-  // ── Debug logger ─────────────────────────────────────────────────
   const panel = document.getElementById('debug-panel');
   function log(msg) {
     const t = new Date().toISOString().substr(11,8);
     panel.innerHTML += `<div>[${t}] ${msg}</div>`;
     panel.scrollTop = panel.scrollHeight;
-    console.log(msg);
+    console.log('[AR]', msg);
   }
-
   function toggleDebug() {
     panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
   }
 
-  // ── Model Viewer events ──────────────────────────────────────────
-  const viewer  = document.getElementById('dish-viewer');
-  const overlay = document.getElementById('loading-overlay');
+  const viewer     = document.getElementById('dish-viewer');
+  const overlay    = document.getElementById('loading-overlay');
+  const btnAndroid = document.getElementById('ar-button-android');
+  const linkIOS    = document.getElementById('ar-link-ios');
 
-  log('model-viewer: aguardando load…');
-
+  // ── Detecção de plataforma ────────────────────────────────────────
   /*
-    CONCEITO: 'load' dispara quando o modelo .glb foi baixado e processado
-    pelo Three.js interno — equivale ao Addressables.LoadAssetAsync callback
-    no Unity.
+    CONCEITO: No Unity você checaria Application.platform. Aqui usamos
+    o userAgent para distinguir iOS de Android. É a mesma lógica que
+    o React Native usa em Platform.OS.
+
+    Não existe API oficial para "é iOS?" mas a combinação de
+    /iPad|iPhone|iPod/ + ausência de "Android" é confiável.
   */
+  const ua      = navigator.userAgent;
+  const isIOS   = /iPad|iPhone|iPod/.test(ua) && !/Android/.test(ua);
+  const isAndroid = /Android/.test(ua);
+
+  log('userAgent: ' + ua.substring(0, 60));
+  log('plataforma detectada: ' + (isIOS ? 'iOS' : isAndroid ? 'Android' : 'Desktop'));
+
+  if (isIOS) {
+    /*
+      iOS: esconde o botão Android (slot do model-viewer não funciona no Safari
+      para Quick Look) e mostra o <a rel="ar">.
+
+      O Safari detecta <a rel="ar"> com filho <img> e adiciona automaticamente
+      um badge "AR" sobre o link — comportamento nativo do iOS 12+.
+
+      Se o iPhone tem iOS < 12, o AR Quick Look não existe; mostramos fallback.
+    */
+    const iosVersion = parseInt((ua.match(/OS (\d+)_/) || [])[1] || '0');
+    log('iOS versão detectada: ' + iosVersion);
+
+    btnAndroid.style.display = 'none'; // esconde slot android
+
+    if (iosVersion >= 12) {
+      linkIOS.style.display = 'flex';
+      document.getElementById('ar-instruction-text').textContent =
+        'Toque em "Ver na sua mesa" acima. O AR Quick Look vai abrir com o modelo posicionado na câmera.';
+      log('iOS 12+ — exibindo link AR Quick Look');
+    } else {
+      log('iOS < 12 — AR Quick Look não suportado');
+      linkIOS.style.display = 'flex';
+      linkIOS.style.opacity = '0.4';
+      linkIOS.style.pointerEvents = 'none';
+      document.getElementById('ar-instruction-text').textContent =
+        'AR requer iOS 12 ou superior com Safari.';
+    }
+
+  } else if (isAndroid) {
+    /*
+      Android: o model-viewer lida tudo via ar-modes="webxr scene-viewer".
+      Apenas logamos o canActivateAR para diagnóstico.
+    */
+    linkIOS.style.display = 'none';
+    log('Android — usando model-viewer AR nativo');
+
+  } else {
+    // Desktop: sem botão AR, só o viewer 3D
+    btnAndroid.style.display = 'none';
+    linkIOS.style.display    = 'none';
+    log('Desktop — AR desativado, só viewer 3D');
+  }
+
+  // ── Eventos do model-viewer ───────────────────────────────────────
   viewer.addEventListener('load', () => {
-    log('modelo carregado com sucesso');
+    log('modelo .glb carregado');
     overlay.classList.add('hidden');
     setTimeout(() => overlay.style.display = 'none', 400);
+
+    if (!isIOS) {
+      log('canActivateAR: ' + viewer.canActivateAR);
+    }
   });
 
   viewer.addEventListener('error', (e) => {
-    log('ERRO ao carregar modelo: ' + JSON.stringify(e.detail));
+    log('ERRO no modelo: ' + JSON.stringify(e.detail));
     overlay.querySelector('p').textContent = 'Erro ao carregar modelo.';
   });
 
-  /*
-    CONCEITO: 'ar-status' é o evento que informa se o AR foi iniciado,
-    apresentado ou encerrado. Equivale aos callbacks do ARSession no Unity.
-    values: 'session-started', 'object-placed', 'failed', 'not-presenting'
-  */
   viewer.addEventListener('ar-status', (e) => {
     log('ar-status: ' + e.detail.status);
   });
 
-  viewer.addEventListener('ar-tracking', (e) => {
-    log('ar-tracking: ' + e.detail.state);
-  });
-
+  // ── Valida se o .usdz está acessível (iOS) ────────────────────────
   /*
-    CONCEITO: detecta se o dispositivo suporta AR antes de mostrar o botão.
-    Equivale a checar XRSystem.IsFeatureSupported() no Unity.
+    CONCEITO: Faz um HEAD request para checar se o .usdz existe e tem
+    os headers CORS corretos antes de o usuário tentar abrir em AR.
+    Equivale a checar se o AssetBundle existe antes de fazer LoadAsync.
   */
-  viewer.addEventListener('model-visibility', () => {
-    const canAR = viewer.canActivateAR;
-    log('canActivateAR: ' + canAR);
-    if (!canAR) {
-      document.getElementById('ar-button').style.opacity = '0.5';
-      document.getElementById('ar-button').title = 'AR não disponível neste dispositivo/browser';
-    }
-  });
-
-  // Log da URL do modelo para confirmar que está carregando
-  log('src: ' + viewer.src);
-  log('userAgent: ' + navigator.userAgent.substring(0, 80));
-
-  // Detecta se está em HTTPS (requisito para AR)
-  if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
-    log('AVISO: AR exige HTTPS. Protocolo atual: ' + location.protocol);
-    overlay.querySelector('p').textContent = 'AR requer HTTPS';
+  if (isIOS) {
+    const usdzUrl = linkIOS.href;
+    fetch(usdzUrl, { method: 'HEAD', mode: 'no-cors' })
+      .then(() => log('HEAD .usdz: acessível (no-cors, não confirma status exato)'))
+      .catch(e  => log('HEAD .usdz: falhou — ' + e.message));
   }
+
+  log('inicialização completa');
 </script>
 
 </body>
