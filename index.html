@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>WebAR — Prato</title>
+
+  <!--
+    STACK:
+    - MindAR.js  → detecta superfícies planas via SLAM (Simultaneous Localization and Mapping)
+                   usando os frames da câmera. Equivale ao AR Foundation Plane Detection do Unity.
+    - Three.js   → renderiza a cena 3D (modelo .glb do prato) sobreposto ao vídeo da câmera.
+                   Equivale ao que a câmera AR + MeshRenderer faziam no Unity.
+    - GLTFLoader → carrega o formato .glb/.gltf, o mesmo que o Unity importa nativamente.
+
+    FLUXO:
+    getUserMedia() → frames → MindAR tracking → matriz de transformação → Three.js render
+  -->
+
+  <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-world-three.prod.js"></script>
+
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #000;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      overflow: hidden;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    /* O MindAR injeta o <video> e o <canvas> de AR aqui */
+    #ar-container {
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+
+    /* HUD — overlay de UI sobre o AR */
+    #hud {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 100;
+      pointer-events: none;
+    }
+
+    #dish-info {
+      background: rgba(0,0,0,0.55);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    #dish-info .dish-emoji {
+      font-size: 28px;
+      line-height: 1;
+    }
+
+    #dish-info .dish-name {
+      color: #fff;
+      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+    }
+
+    #dish-info .dish-desc {
+      color: rgba(255,255,255,0.65);
+      font-size: 12px;
+      margin-top: 2px;
+    }
+
+    /* Estado de loading / instrução */
+    #status-bar {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      z-index: 100;
+      padding: 20px;
+    }
+
+    #status-pill {
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      color: #fff;
+      border-radius: 100px;
+      padding: 10px 20px;
+      text-align: center;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: opacity 0.4s;
+    }
+
+    #status-pill.hidden { opacity: 0; pointer-events: none; }
+
+    .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Crosshair de mira para superfície */
+    #crosshair {
+      position: fixed;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 99;
+      pointer-events: none;
+      transition: opacity 0.3s;
+    }
+
+    #crosshair svg { opacity: 0.7; }
+
+    /* Controles de interação */
+    #controls {
+      position: fixed;
+      right: 16px;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .ctrl-btn {
+      width: 44px; height: 44px;
+      background: rgba(0,0,0,0.55);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 12px;
+      color: #fff;
+      font-size: 20px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      transition: background 0.15s;
+    }
+
+    .ctrl-btn:active { background: rgba(255,255,255,0.2); }
+
+    /* Tela de permissão de câmera */
+    #permission-screen {
+      position: fixed;
+      inset: 0;
+      background: #0a0a0a;
+      z-index: 200;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      padding: 40px;
+      text-align: center;
+    }
+
+    #permission-screen .icon { font-size: 64px; }
+
+    #permission-screen h2 {
+      color: #fff;
+      font-size: 22px;
+      font-weight: 600;
+    }
+
+    #permission-screen p {
+      color: rgba(255,255,255,0.55);
+      font-size: 15px;
+      line-height: 1.6;
+      max-width: 280px;
+    }
+
+    #start-btn {
+      background: #fff;
+      color: #000;
+      border: none;
+      border-radius: 100px;
+      padding: 14px 32px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 8px;
+    }
+
+    #start-btn:active { opacity: 0.8; }
+  </style>
+</head>
+<body>
+
+<!-- ─── Tela inicial de permissão ─── -->
+<!--
+  CONCEITO: O browser exige que getUserMedia() seja chamado por um gesto do usuário
+  (tap/click), não no carregamento da página. Esse é o equivalente ao
+  "Request Camera Permission" que o Unity AR Foundation faz em iOS/Android.
+-->
+<div id="permission-screen">
+  <div class="icon">🍽️</div>
+  <h2>Visualizar prato em AR</h2>
+  <p>Aponte a câmera para uma superfície plana (mesa, balcão) para ver o prato em tamanho real.</p>
+  <button id="start-btn" onclick="startAR()">Abrir câmera</button>
+</div>
+
+<!-- ─── Container do AR ─── -->
+<div id="ar-container"></div>
+
+<!-- ─── HUD de informação do prato ─── -->
+<div id="hud">
+  <div id="dish-info" style="display:none">
+    <span class="dish-emoji">🥘</span>
+    <div>
+      <div class="dish-name">Risoto de Cogumelos</div>
+      <div class="dish-desc">Cogumelos shiitake · Parmesão · Alho · R$ 54</div>
+    </div>
+  </div>
+</div>
+
+<!-- ─── Controles de escala/rotação ─── -->
+<!--
+  CONCEITO: Sem Unity Input System, usamos eventos de toque nativos do browser.
+  touchstart/touchmove substituem o pinch gesture e drag do Unity.
+-->
+<div id="controls" style="display:none">
+  <div class="ctrl-btn" id="btn-scale-up" title="Aumentar">＋</div>
+  <div class="ctrl-btn" id="btn-scale-dn" title="Diminuir">－</div>
+  <div class="ctrl-btn" id="btn-reset" title="Resetar">↺</div>
+</div>
+
+<!-- ─── Status bar ─── -->
+<div id="status-bar" style="display:none">
+  <div id="status-pill">
+    <div class="spinner" id="status-spinner"></div>
+    <span id="status-text">Inicializando câmera…</span>
+  </div>
+</div>
+
+<!-- ─── Crosshair ─── -->
+<div id="crosshair" style="display:none">
+  <svg width="60" height="60" viewBox="0 0 60 60" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="30" cy="30" r="28" stroke="white" stroke-width="1.5" stroke-dasharray="6 4"/>
+    <circle cx="30" cy="30" r="3" fill="white"/>
+    <line x1="30" y1="10" x2="30" y2="18" stroke="white" stroke-width="1.5"/>
+    <line x1="30" y1="42" x2="30" y2="50" stroke="white" stroke-width="1.5"/>
+    <line x1="10" y1="30" x2="18" y2="30" stroke="white" stroke-width="1.5"/>
+    <line x1="42" y1="30" x2="50" y2="30" stroke="white" stroke-width="1.5"/>
+  </svg>
+</div>
+
+
+<script>
+/*
+  CONCEITO GERAL:
+  O MindAR.js implementa SLAM (Simultaneous Localization and Mapping) em JavaScript.
+  A cada frame de vídeo, ele estima a posição e orientação da câmera no espaço 3D,
+  detecta superfícies planas (planos horizontais) e devolve uma matriz 4x4 de transformação.
+  Essa matriz é a mesma coisa que o Transform de um AR Anchor no Unity AR Foundation.
+
+  O Three.js usa essa matriz para posicionar o modelo 3D na cena, aplicando a mesma
+  lógica de uma âncora de plano no Unity — o objeto "senta" sobre a superfície.
+*/
+
+let mindarThree = null;
+let dishMesh = null;
+let dishScale = 1.0;
+let isTracking = false;
+let touchStartDist = null;
+
+// ── Helpers de UI ──────────────────────────────────────────────────
+function setStatus(text, showSpinner = false) {
+  const pill    = document.getElementById('status-pill');
+  const spinner = document.getElementById('status-spinner');
+  const label   = document.getElementById('status-text');
+  label.textContent    = text;
+  spinner.style.display = showSpinner ? 'block' : 'none';
+}
+
+function hideStatus() {
+  document.getElementById('status-pill').classList.add('hidden');
+}
+
+// ── Gerador de modelo placeholder ─────────────────────────────────
+/*
+  CONCEITO: Em produção, aqui você carregaria um .glb real via:
+    const loader = new THREE.GLTFLoader();
+    loader.load('https://seu-cdn.com/prato.glb', (gltf) => { ... });
+
+  Para este protótipo, geramos uma geometria procedural que representa
+  o prato: um disco (plate) + mound de comida (cone) + efeito de vapor.
+  É o equivalente a criar um GameObject com MeshFilter + MeshRenderer no Unity.
+*/
+function buildDishMesh(THREE) {
+  const group = new THREE.Group();
+
+  // Prato base — CylinderGeometry equivale ao Cylinder do Unity
+  const plateGeo  = new THREE.CylinderGeometry(0.14, 0.12, 0.015, 40);
+  const plateMat  = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.15,
+    metalness: 0.05,
+  });
+  const plate = new THREE.Mesh(plateGeo, plateMat);
+  plate.receiveShadow = true;
+  group.add(plate);
+
+  // Aro do prato
+  const rimGeo = new THREE.TorusGeometry(0.135, 0.008, 12, 40);
+  const rimMat = new THREE.MeshStandardMaterial({ color: 0xdddddd, roughness: 0.2 });
+  const rim    = new THREE.Mesh(rimGeo, rimMat);
+  rim.rotation.x = Math.PI / 2;
+  rim.position.y = 0.013;
+  group.add(rim);
+
+  // Conteúdo (risoto simulado) — SphereGeometry achatada
+  const foodGeo = new THREE.SphereGeometry(0.10, 24, 12, 0, Math.PI * 2, 0, Math.PI * 0.55);
+  const foodMat = new THREE.MeshStandardMaterial({
+    color: 0xc8883a,
+    roughness: 0.85,
+    metalness: 0.0,
+  });
+  const food = new THREE.Mesh(foodGeo, foodMat);
+  food.position.y = 0.018;
+  food.rotation.x = Math.PI; // flip para ficar a cúpula pra cima
+  food.scale.y = 0.55;
+  group.add(food);
+
+  // Detalhes de cogumelos (esferas pequenas sobre a comida)
+  const mushMat = new THREE.MeshStandardMaterial({ color: 0x7a4f2a, roughness: 0.9 });
+  const mushPositions = [
+    [0.04, 0.038, 0.02],
+    [-0.05, 0.036, 0.01],
+    [0.0,  0.040, -0.04],
+    [0.06, 0.034, -0.02],
+    [-0.03, 0.039, -0.05],
+  ];
+  mushPositions.forEach(([x, y, z]) => {
+    const mGeo  = new THREE.SphereGeometry(0.014, 8, 8);
+    const mMesh = new THREE.Mesh(mGeo, mushMat);
+    mMesh.position.set(x, y, z);
+    mMesh.scale.y = 0.5;
+    group.add(mMesh);
+  });
+
+  // Sombra projetada no plano (DecalGeometry seria ideal em produção)
+  const shadowGeo = new THREE.CircleGeometry(0.16, 32);
+  const shadowMat = new THREE.MeshBasicMaterial({
+    color: 0x000000,
+    transparent: true,
+    opacity: 0.18,
+  });
+  const shadow = new THREE.Mesh(shadowGeo, shadowMat);
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = -0.001;
+  group.add(shadow);
+
+  return group;
+}
+
+// ── Vapor animado (partículas simples) ────────────────────────────
+/*
+  CONCEITO: No Unity faríamos isso com Particle System.
+  No Three.js, simulamos com Points (sprites billboarded) atualizados em cada frame
+  dentro do animation loop — equivale ao Update() do MonoBehaviour.
+*/
+function buildSteamParticles(THREE) {
+  const count    = 30;
+  const geometry = new THREE.BufferGeometry();
+  const positions = new Float32Array(count * 3);
+  const phases    = new Float32Array(count);
+
+  for (let i = 0; i < count; i++) {
+    positions[i * 3]     = (Math.random() - 0.5) * 0.06;
+    positions[i * 3 + 1] = Math.random() * 0.12 + 0.04;
+    positions[i * 3 + 2] = (Math.random() - 0.5) * 0.06;
+    phases[i] = Math.random() * Math.PI * 2;
+  }
+
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry._phases   = phases;
+  geometry._basePos  = positions.slice();
+
+  const material = new THREE.PointsMaterial({
+    color: 0xffffff,
+    size: 0.018,
+    transparent: true,
+    opacity: 0.25,
+    depthWrite: false,
+  });
+
+  return new THREE.Points(geometry, material);
+}
+
+function animateSteam(steam, THREE, t) {
+  const pos    = steam.geometry.attributes.position;
+  const base   = steam.geometry._basePos;
+  const phases = steam.geometry._phases;
+  const count  = phases.length;
+
+  for (let i = 0; i < count; i++) {
+    const phase = phases[i];
+    const rise  = ((t * 0.4 + phase / (2 * Math.PI)) % 1.0);
+    pos.array[i * 3]     = base[i * 3]     + Math.sin(t * 1.5 + phase) * 0.012;
+    pos.array[i * 3 + 1] = base[i * 3 + 1] + rise * 0.08;
+    pos.array[i * 3 + 2] = base[i * 3 + 2];
+    steam.material.opacity = 0.12 + 0.13 * Math.sin(t + phase);
+  }
+  pos.needsUpdate = true;
+}
+
+// ── Inicialização AR ───────────────────────────────────────────────
+async function startAR() {
+  document.getElementById('permission-screen').style.display = 'none';
+  document.getElementById('status-bar').style.display       = 'block';
+  document.getElementById('crosshair').style.display        = 'block';
+  setStatus('Inicializando câmera…', true);
+
+  /*
+    CONCEITO: MindARThree é o ponto de entrada equivalente ao AR Session + AR Camera
+    do Unity. Ele cria o renderer Three.js internamente, configura o WebGL canvas
+    sobreposto ao vídeo da câmera, e inicia o loop de tracking.
+
+    uiScanning: false → desativa a UI padrão do MindAR (usamos a nossa).
+    uiLoading:  false → idem.
+  */
+  const THREE      = window.MINDAR.WORLD.THREE;
+  const MindARThree = window.MINDAR.WORLD.MindARThree;
+
+  mindarThree = new MindARThree({
+    container: document.getElementById('ar-container'),
+    uiScanning: false,
+    uiLoading:  false,
+  });
+
+  const { renderer, scene, camera } = mindarThree;
+
+  // Iluminação — equivale às Lights no Unity
+  const ambient = new THREE.AmbientLight(0xffffff, 0.7);
+  scene.add(ambient);
+
+  const dirLight = new THREE.DirectionalLight(0xfff4e0, 1.2);
+  dirLight.position.set(0.5, 2, 1);
+  dirLight.castShadow = true;
+  scene.add(dirLight);
+
+  const fillLight = new THREE.DirectionalLight(0xd0e8ff, 0.4);
+  fillLight.position.set(-1, 0.5, -0.5);
+  scene.add(fillLight);
+
+  /*
+    CONCEITO: addAnchor() cria um "anchor" de superfície plana —
+    o equivalente direto a um AR Plane Anchor no Unity AR Foundation.
+    Quando o tracker detecta um plano horizontal, a matriz deste anchor
+    é atualizada automaticamente a cada frame.
+  */
+  const anchor = mindarThree.addAnchor(0);
+
+  // Constrói o modelo de prato e adiciona ao anchor
+  dishMesh      = buildDishMesh(THREE);
+  const steam   = buildSteamParticles(THREE);
+  const dishGroup = new THREE.Group();
+  dishGroup.add(dishMesh);
+  dishGroup.add(steam);
+  dishGroup.position.y = 0.01; // pequeno offset para não cravar no plano
+
+  anchor.group.add(dishGroup);
+
+  /*
+    CONCEITO: onTargetFound / onTargetLost são equivalentes aos eventos
+    ARPlaneDetected / ARPlaneRemoved do AR Foundation. Quando o tracker
+    confirma um plano estável, exibimos o modelo; quando perde, ocultamos.
+  */
+  anchor.onTargetFound = () => {
+    isTracking = true;
+    dishGroup.visible = true;
+    document.getElementById('dish-info').style.display = 'flex';
+    document.getElementById('controls').style.display  = 'flex';
+    document.getElementById('crosshair').style.display = 'none';
+    hideStatus();
+  };
+
+  anchor.onTargetLost = () => {
+    isTracking = false;
+    dishGroup.visible = false;
+    document.getElementById('dish-info').style.display = 'none';
+    document.getElementById('controls').style.display  = 'none';
+    document.getElementById('crosshair').style.display = 'block';
+    document.getElementById('status-pill').classList.remove('hidden');
+    setStatus('Mova a câmera sobre uma superfície plana…');
+  };
+
+  dishGroup.visible = false;
+
+  /*
+    CONCEITO: mindarThree.start() é o equivalente ao Play Mode ou ao
+    ARSession.enabled = true no Unity. A partir daqui o MindAR começa
+    a processar frames da câmera e a atualizar os anchors.
+  */
+  try {
+    await mindarThree.start();
+    setStatus('Mova a câmera sobre uma superfície plana…');
+    document.getElementById('status-spinner').style.display = 'none';
+  } catch (err) {
+    setStatus('Erro ao acessar câmera. Verifique as permissões.');
+    console.error(err);
+    return;
+  }
+
+  // ── Animation loop (equivale ao Update() + LateUpdate() do Unity) ──
+  const clock = new THREE.Clock();
+
+  renderer.setAnimationLoop(() => {
+    const t = clock.getElapsedTime();
+
+    if (isTracking && dishGroup.visible) {
+      // Rotação suave do prato (auto-rotate) — equivale a um Rotator Component
+      dishGroup.rotation.y = t * 0.3;
+
+      // Animação de vapor
+      animateSteam(steam, THREE, t);
+
+      // Leve flutuação vertical (hover)
+      dishGroup.position.y = 0.01 + Math.sin(t * 1.2) * 0.004;
+    }
+
+    renderer.render(scene, camera);
+  });
+}
+
+// ── Controles de escala ────────────────────────────────────────────
+/*
+  CONCEITO: Botões de escala substituem o pinch gesture do Unity.
+  Em produção, você implementaria o pinch nativo com eventos de touch:
+  touch[0].distance e touch[1].distance → calcular ratio → aplicar scale.
+*/
+document.getElementById('btn-scale-up').addEventListener('click', () => {
+  if (!dishMesh) return;
+  dishScale = Math.min(dishScale + 0.15, 2.5);
+  dishMesh.parent.scale.setScalar(dishScale);
+});
+
+document.getElementById('btn-scale-dn').addEventListener('click', () => {
+  if (!dishMesh) return;
+  dishScale = Math.max(dishScale - 0.15, 0.3);
+  dishMesh.parent.scale.setScalar(dishScale);
+});
+
+document.getElementById('btn-reset').addEventListener('click', () => {
+  if (!dishMesh) return;
+  dishScale = 1.0;
+  dishMesh.parent.scale.setScalar(dishScale);
+});
+
+// ── Pinch-to-scale nativo ─────────────────────────────────────────
+document.addEventListener('touchstart', (e) => {
+  if (e.touches.length === 2) {
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    touchStartDist = Math.sqrt(dx * dx + dy * dy);
+  }
+}, { passive: true });
+
+document.addEventListener('touchmove', (e) => {
+  if (e.touches.length === 2 && touchStartDist && dishMesh) {
+    const dx   = e.touches[0].clientX - e.touches[1].clientX;
+    const dy   = e.touches[0].clientY - e.touches[1].clientY;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const ratio = dist / touchStartDist;
+    dishScale = Math.max(0.3, Math.min(2.5, dishScale * ratio));
+    dishMesh.parent.scale.setScalar(dishScale);
+    touchStartDist = dist;
+  }
+}, { passive: true });
+</script>
+
+</body>
+</html>
